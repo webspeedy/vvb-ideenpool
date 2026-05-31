@@ -608,5 +608,29 @@ function doAnalyze() {
     runAnalysis(null, null);
   }
 }
-
-
+// ── INIT ─────────────────────────────────────────────────────────────────────
+(function() {
+  function init() {
+    try {
+      var k = localStorage.getItem("vvb_k") || "";
+      var g = localStorage.getItem("vvb_g") || "";
+      if (k) KEY = k;
+      if (g) GAS = g;
+      if (k && g && g.indexOf("script.google.com") > -1) {
+        showApp();
+      } else {
+        var gasEl = document.getElementById("IN_GAS");
+        if (gasEl && g) gasEl.value = g;
+        sMsg(k ? "Key gesetzt — GAS URL eingeben und testen" : "Bitte beide Felder ausfüllen.", null);
+      }
+    } catch(e) {}
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
