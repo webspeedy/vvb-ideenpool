@@ -470,25 +470,150 @@ function doAnalyze() {
   var link   = document.getElementById("IN_LINK").value.trim();
   var hasImg = !!(window._imgB64);
 
-  if (!hasImg && !link) {
-    setAiRes("❌ Screenshot hochladen oder Link eingeben", false); return;
-  }
-  if (!KEY) { setAiRes("❌ API Key fehlt — Claude AI antippen", false); return; }
-  if (!GAS) { setAiRes("❌ GAS URL fehlt — Claude AI antippen", false); return; }
+  if (!hasImg && !link) { setAiRes("❌ Screenshot hochladen oder Link eingeben", false); return; }
+  if (!KEY) { setAiRes("❌ API Key fehlt", false); return; }
+  if (!GAS) { setAiRes("❌ GAS URL fehlt", false); return; }
 
   var btn = document.getElementById("AI_BTN");
   btn.disabled = true; btn.textContent = "⏳";
-  setAiStatus(hasImg ? "Claude liest Screenshot…" : "Analysiert Link…");
-  setAiRes("", null);
+  setAiStatus("Analysiert…"); setAiRes("", null);
 
+  if (hasImg) {
+    // Step 1: Send image directly to Claude API (browser → Anthropic, no CORS issue on HTTPS)
+    setAiStatus("Claude liest Screenshot…");
+    analyzeWithClaude(link, window._imgB64, window._imgMime);
+  } else {
+    // No image: use GAS JSONP (link + page content)
+    analyzeViaGAS(link);
+  }
+}
+
+function analyzeWithClaude(link, imgB64, imgMime) {
+  var btn = document.getElementById("AI_BTN");
+
+  // Compress image first
+  try {
+    var img = new Image();
+    img.onload = function() {
+      var MAX = 1000;
+      var w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        var scale = Math.min(MAX/w, MAX/h);
+        w = Math.round(w*scale); h = Math.round(h*scale);
+      }
+      var canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      var compressed = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+      callClaudeDirectly(compressed, "image/jpeg", link);
+    };
+    img.onerror = function() { callClaudeDirectly(imgB64, imgMime, link); };
+    img.src = "data:" + imgMime + ";base64," + imgB64;
+  } catch(e) {
+    callClaudeDirectly(imgB64, imgMime, link);
+  }
+}
+
+function callClaudeDirectly(imgB64, imgMime, link) {
+  var btn = document.getElementById("AI_BTN");
+  setAiStatus("Claude analysiert Screenshot…");
+
+  var sysPrompt = "Du bist ein Produktanalyse-Assistent für VVB International (Haustechnik). " +
+    "Lies alle sichtbaren Texte im Bild EXAKT wie sie erscheinen. Erfinde nichts. " +
+    "Antworte NUR mit validem JSON ohne Markdown." +
+    " Kategorien: Waermepumpe|Klimaanlage|Solar PV|Smart Home|Lueftung|Heizung|Sanitaer|Sonstiges." +
+    " Zielgruppen: Privatkunden B2C|Gewerbe Handwerk|B2B Grosskunden|Projektentwickler|Alle Segmente." +
+    " Geschaeftsmodelle: Einmalverkauf|Abo Leasing|Service Wartung|Bundle|Lizenz|Sonstiges." +
+    " Steering Board: Ja|Nein|Pruefen." +
+    " konfidenz: 0.95+ wenn Produktname klar lesbar, unter 0.5 alles leer lassen.";
+
+  var tmpl = '{"produktbezeichnung":"","produktbeschreibung":"","kundennutzen":"",' +
+    '"preisindikation":"","geschaeftsmodell":"","kategorie":"","zielgruppe":"",' +
+    '"steeringBoard":"Pruefen","anmerkungen":"","konfidenz":0.0}';
+
+  var userTxt = "Analysiere diesen Screenshot. URL: " + (link||"unbekannt") + ". " +
+    "Lies alle sichtbaren Produktinformationen exakt aus dem Bild. " +
+    "Gib nur dieses JSON zurück: " + tmpl;
+
+  fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-calls": "true"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 1000,
+      system: sysPrompt,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: imgMime, data: imgB64 } },
+          { type: "text",  text: userTxt }
+        ]
+      }]
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var btn = document.getElementById("AI_BTN");
+    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+    setAiStatus("");
+    if (data.error) {
+      setAiRes("❌ Claude Fehler: " + data.error.message, false); return;
+    }
+    var raw = data.content && data.content[0] ? data.content[0].text : "";
+    var m   = raw.match(/\{[\s\S]*\}/);
+    if (!m) { setAiRes("❌ Kein JSON in Antwort", false); return; }
+    try {
+      var r   = JSON.parse(m[0]);
+      var pct = Math.round((r.konfidenz||0)*100);
+      if (pct < 50) {
+        setAiRes("⚠️ Analyse nicht eindeutig (" + pct + "%) — bitte manuell ausfüllen.", false);
+      } else {
+        var n = applyResult(r);
+        setAiRes(pct >= 90
+          ? "✅ " + n + " Felder befüllt (" + pct + "%)"
+          : "⚠️ " + n + " Felder befüllt — bitte prüfen (" + pct + "%)", pct >= 90);
+        document.getElementById("formArea").scrollTo({top:0, behavior:"smooth"});
+      }
+    } catch(e) { setAiRes("❌ Parse Fehler: " + e.message, false); }
+  })
+  .catch(function(e) {
+    var btn = document.getElementById("AI_BTN");
+    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+    setAiStatus("");
+    // Fallback to GAS without image
+    setAiRes("⚠️ Screenshot-Upload fehlgeschlagen — analysiere nur Link.", false);
+    if (link) { setTimeout(function(){ analyzeViaGAS(link); }, 500); }
+  });
+}
+
+function analyzeViaGAS(link) {
+  var btn = document.getElementById("AI_BTN");
+  setAiStatus("Analysiert Link via GAS…");
   var cb = "ac" + Date.now();
+  var params = "?callback=" + cb +
+    "&action=analyze" +
+    "&api_key="  + encodeURIComponent(KEY) +
+    "&link="     + encodeURIComponent(link||"") +
+    "&source="   + encodeURIComponent(SRC);
 
-  function onResult(d) {
+  var t = setTimeout(function() {
+    delete window[cb];
+    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+    setAiStatus(""); setAiRes("❌ Timeout — bitte erneut versuchen", false);
+  }, 35000);
+
+  window[cb] = function(d) {
+    clearTimeout(t); delete window[cb];
     btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
     setAiStatus("");
     if (d && d.ok && d.result) {
-      var r   = d.result;
-      var pct = Math.round((r.konfidenz || 0) * 100);
+      var r = d.result;
+      var pct = Math.round((r.konfidenz||0)*100);
       if (pct < 50) {
         setAiRes("⚠️ Analyse nicht eindeutig (" + pct + "%) — bitte manuell ausfüllen.", false);
       } else {
@@ -499,115 +624,21 @@ function doAnalyze() {
         document.getElementById("formArea").scrollTo({top:0, behavior:"smooth"});
       }
     } else {
-      setAiRes("❌ " + (d && d.error ? d.error : "Analyse fehlgeschlagen"), false);
+      setAiRes("❌ " + (d&&d.error ? d.error : "Analyse fehlgeschlagen"), false);
     }
-  }
+  };
 
-  // Compress image if present (max 800px, JPEG quality 0.7)
-  var imgB64  = window._imgB64  || null;
-  var imgMime = window._imgMime || null;
-
-  function runAnalysis(b64, mime) {
-    var payload = {
-      action:     "analyze",
-      api_key:    KEY,
-      link:       link || "",
-      source:     SRC
-    };
-    if (b64 && mime) {
-      payload.image_b64  = b64;
-      payload.image_mime = mime;
-    }
-
-    // Always use fetch with short timeout, fallback to JSONP (link-only)
-    var done = false;
-
-    var timer = setTimeout(function() {
-      if (done) return;
-      done = true;
-      // fetch timed out or blocked - fall back to JSONP without image
-      setAiStatus("Fallback auf JSONP…");
-      runJsonp();
-    }, 4000);
-
-    fetch(GAS, {
-      method:  "POST",
-      mode:    "cors",
-      headers: {"Content-Type": "application/json"},
-      body:    JSON.stringify(payload),
-      signal:  AbortSignal.timeout(30000)
-    })
-    .then(function(r) {
-      clearTimeout(timer);
-      if (done) return;
-      done = true;
-      return r.json();
-    })
-    .then(function(d) { if (d) onResult(d); })
-    .catch(function() {
-      clearTimeout(timer);
-      if (done) return;
-      done = true;
-      runJsonp();
-    });
-
-    function runJsonp() {
-      setAiStatus("Analysiert via JSONP…");
-      var params = "?callback=" + cb +
-        "&action=analyze" +
-        "&api_key=" + encodeURIComponent(KEY) +
-        "&link="    + encodeURIComponent(link || "") +
-        "&source="  + encodeURIComponent(SRC);
-      // Note: image not included in JSONP (too large for URL)
-      if (b64 && mime) {
-        setAiStatus("Screenshot-Upload nicht möglich via JSONP — analysiere Link…");
-      }
-      var t2 = setTimeout(function() {
-        delete window[cb];
-        btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-        setAiStatus("");
-        setAiRes("❌ Timeout — bitte erneut versuchen", false);
-      }, 35000);
-      window[cb] = function(d) { clearTimeout(t2); delete window[cb]; onResult(d); };
-      var s = document.createElement("script");
-      s.src = GAS + params;
-      s.onerror = function() {
-        clearTimeout(t2); delete window[cb];
-        btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-        setAiStatus("");
-        setAiRes("❌ Verbindungsfehler — GAS URL prüfen", false);
-      };
-      document.head.appendChild(s);
-    }
-  }
-
-  // Compress screenshot before sending
-  if (imgB64 && imgMime) {
-    try {
-      var img = new Image();
-      img.onload = function() {
-        var MAX = 800;
-        var w = img.width, h = img.height;
-        if (w > MAX || h > MAX) {
-          var scale = Math.min(MAX/w, MAX/h);
-          w = Math.round(w*scale); h = Math.round(h*scale);
-        }
-        var canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        var ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, w, h);
-        var compressed = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
-        runAnalysis(compressed, "image/jpeg");
-      };
-      img.onerror = function() { runAnalysis(null, null); };
-      img.src = "data:" + imgMime + ";base64," + imgB64;
-    } catch(e) {
-      runAnalysis(imgB64, imgMime);
-    }
-  } else {
-    runAnalysis(null, null);
-  }
+  var s = document.createElement("script");
+  s.src = GAS + params;
+  s.onerror = function() {
+    clearTimeout(t); delete window[cb];
+    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+    setAiStatus(""); setAiRes("❌ GAS Verbindungsfehler", false);
+  };
+  document.head.appendChild(s);
 }
+
+
 // ── INIT ─────────────────────────────────────────────────────────────────────
 (function() {
   function init() {
