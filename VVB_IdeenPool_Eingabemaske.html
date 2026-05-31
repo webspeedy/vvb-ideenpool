@@ -123,6 +123,8 @@ input::placeholder,textarea::placeholder{color:var(--gray)}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
 </style>
+
+
 </head>
 <body>
 
@@ -338,6 +340,8 @@ input::placeholder,textarea::placeholder{color:var(--gray)}
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+
+
 <script>
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const TEAM   = ["Marijo","Noel","Jun","Francesco","Dirk","Gordana","Christian","Gast 1","Gast 2","Gast 3"];
@@ -383,16 +387,29 @@ function doTest() {
   var url = GAS;
   if (!url) { sMsg("❌ GAS URL eingeben", false); return; }
   sMsg("⏳ Teste Verbindung…", null);
-  var cb = "tc" + Date.now();
-  var timer = setTimeout(function(){ delete window[cb]; sMsg("❌ Timeout", false); }, 12000);
-  window[cb] = function(d) {
-    clearTimeout(timer); delete window[cb];
-    sMsg(d&&d.ok!==undefined ? "✅ Verbindung OK!" : "❌ Fehler", d&&d.ok!==undefined);
-  };
-  var s = document.createElement("script");
-  s.src = url + "?callback=" + cb;
-  s.onerror = function(){ clearTimeout(timer); delete window[cb]; sMsg("❌ Nicht erreichbar", false); };
-  document.head.appendChild(s);
+  // fetch statt JSONP — zuverlässiger in Safari auf HTTPS
+  fetch(url + "?t=" + Date.now())
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d && d.ok !== undefined) {
+        sMsg("✅ Verbindung OK! " + d.stats.gesamt + " Ideen im Pool.", true);
+      } else {
+        sMsg("❌ Unerwartete Antwort", false);
+      }
+    })
+    .catch(function(e) {
+      // fetch blocked (CORS) - try JSONP as fallback
+      var cb = "tc" + Date.now();
+      var timer = setTimeout(function(){ delete window[cb]; sMsg("❌ Timeout", false); }, 12000);
+      window[cb] = function(d) {
+        clearTimeout(timer); delete window[cb];
+        sMsg(d&&d.ok!==undefined ? "✅ Verbindung OK! " + d.stats.gesamt + " Ideen." : "❌ Fehler", d&&d.ok!==undefined);
+      };
+      var s = document.createElement("script");
+      s.src = url + "?callback=" + cb;
+      s.onerror = function(){ clearTimeout(timer); delete window[cb]; sMsg("❌ Nicht erreichbar — URL prüfen", false); };
+      document.head.appendChild(s);
+    });
 }
 
 // ── SOURCE TABS ───────────────────────────────────────────────────────────────
