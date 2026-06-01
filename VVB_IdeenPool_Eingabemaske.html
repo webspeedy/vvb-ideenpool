@@ -371,7 +371,7 @@ function sMsg(t, ok) {
 function doSave() {
   var k = (document.getElementById("IN_KEY").value||"").trim() || KEY;
   var g = (document.getElementById("IN_GAS").value||"").trim() || GAS;
-  if (!k) { sMsg("❌ Claude API Key fehlt", false); return; }
+  if (!k) { sMsg("❌ API Key fehlt", false); return; }
   if (!g) { sMsg("❌ GAS URL fehlt", false); return; }
   KEY = k; GAS = g;
   try { localStorage.setItem("vvb_k", k); localStorage.setItem("vvb_g", g); } catch(e){}
@@ -384,31 +384,20 @@ function doTest() {
   var g = (document.getElementById("IN_GAS").value||"").trim();
   if (k) { KEY = k; try{localStorage.setItem("vvb_k",k);}catch(e){} }
   if (g) { GAS = g; try{localStorage.setItem("vvb_g",g);}catch(e){} }
-  var url = GAS;
-  if (!url) { sMsg("❌ GAS URL eingeben", false); return; }
+  if (!GAS) { sMsg("❌ GAS URL eingeben", false); return; }
   sMsg("⏳ Teste Verbindung…", null);
-  // fetch statt JSONP — zuverlässiger in Safari auf HTTPS
-  fetch(url + "?t=" + Date.now())
+
+  fetch(GAS)
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      if (d && d.ok !== undefined) {
+      if (d && d.ok) {
         sMsg("✅ Verbindung OK! " + d.stats.gesamt + " Ideen im Pool.", true);
       } else {
         sMsg("❌ Unerwartete Antwort", false);
       }
     })
-    .catch(function(e) {
-      // fetch blocked (CORS) - try JSONP as fallback
-      var cb = "tc" + Date.now();
-      var timer = setTimeout(function(){ delete window[cb]; sMsg("❌ Timeout", false); }, 12000);
-      window[cb] = function(d) {
-        clearTimeout(timer); delete window[cb];
-        sMsg(d&&d.ok!==undefined ? "✅ Verbindung OK! " + d.stats.gesamt + " Ideen." : "❌ Fehler", d&&d.ok!==undefined);
-      };
-      var s = document.createElement("script");
-      s.src = url + "?callback=" + cb;
-      s.onerror = function(){ clearTimeout(timer); delete window[cb]; sMsg("❌ Nicht erreichbar — URL prüfen", false); };
-      document.head.appendChild(s);
+    .catch(function(err) {
+      sMsg("❌ " + err.message, false);
     });
 }
 
@@ -610,49 +599,35 @@ function callClaudeDirectly(imgB64, imgMime, link) {
 
 function analyzeViaGAS(link) {
   var btn = document.getElementById("AI_BTN");
-  setAiStatus("Analysiert Link via GAS…");
-  var cb = "ac" + Date.now();
-  var params = "?callback=" + cb +
-    "&action=analyze" +
-    "&api_key="  + encodeURIComponent(KEY) +
-    "&link="     + encodeURIComponent(link||"") +
-    "&source="   + encodeURIComponent(SRC);
+  setAiStatus("Analysiert Link…");
 
-  var t = setTimeout(function() {
-    delete window[cb];
-    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-    setAiStatus(""); setAiRes("❌ Timeout — bitte erneut versuchen", false);
-  }, 35000);
-
-  window[cb] = function(d) {
-    clearTimeout(t); delete window[cb];
-    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-    setAiStatus("");
-    if (d && d.ok && d.result) {
-      var r = d.result;
-      var pct = Math.round((r.konfidenz||0)*100);
-      if (pct < 50) {
-        setAiRes("⚠️ Analyse nicht eindeutig (" + pct + "%) — bitte manuell ausfüllen.", false);
+  fetch(GAS + "?action=analyze&api_key=" + encodeURIComponent(KEY) +
+    "&link=" + encodeURIComponent(link||"") + "&source=" + encodeURIComponent(SRC))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+      setAiStatus("");
+      if (d && d.ok && d.result) {
+        var r   = d.result;
+        var pct = Math.round((r.konfidenz||0)*100);
+        if (pct < 50) {
+          setAiRes("⚠️ Analyse nicht eindeutig (" + pct + "%) — bitte manuell ausfüllen.", false);
+        } else {
+          var n = applyResult(r);
+          setAiRes(pct >= 90
+            ? "✅ " + n + " Felder befüllt (" + pct + "%)"
+            : "⚠️ " + n + " Felder — bitte prüfen (" + pct + "%)", pct >= 90);
+          document.getElementById("formArea").scrollTo({top:0, behavior:"smooth"});
+        }
       } else {
-        var n = applyResult(r);
-        setAiRes(pct >= 90
-          ? "✅ " + n + " Felder befüllt (" + pct + "%)"
-          : "⚠️ " + n + " Felder befüllt — bitte prüfen (" + pct + "%)", pct >= 90);
-        document.getElementById("formArea").scrollTo({top:0, behavior:"smooth"});
+        setAiRes("❌ " + (d&&d.error ? d.error : "Analyse fehlgeschlagen"), false);
       }
-    } else {
-      setAiRes("❌ " + (d&&d.error ? d.error : "Analyse fehlgeschlagen"), false);
-    }
-  };
-
-  var s = document.createElement("script");
-  s.src = GAS + params;
-  s.onerror = function() {
-    clearTimeout(t); delete window[cb];
-    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-    setAiStatus(""); setAiRes("❌ GAS Verbindungsfehler", false);
-  };
-  document.head.appendChild(s);
+    })
+    .catch(function(e) {
+      btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+      setAiStatus("");
+      setAiRes("❌ Verbindungsfehler: " + e.message, false);
+    });
 }
 
 
@@ -680,5 +655,6 @@ function analyzeViaGAS(link) {
   }
 })();
 </script>
+
 </body>
 </html>
