@@ -387,18 +387,25 @@ function doTest() {
   if (!GAS) { sMsg("❌ GAS URL eingeben", false); return; }
   sMsg("⏳ Teste Verbindung…", null);
 
-  fetch(GAS)
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
+  // XHR without custom headers - browsers allow simple cross-origin GET requests
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", GAS + "?_=" + Date.now(), true);
+  xhr.timeout = 10000;
+  xhr.onload = function() {
+    try {
+      var d = JSON.parse(xhr.responseText);
       if (d && d.ok) {
         sMsg("✅ Verbindung OK! " + d.stats.gesamt + " Ideen im Pool.", true);
       } else {
         sMsg("❌ Unerwartete Antwort", false);
       }
-    })
-    .catch(function(err) {
-      sMsg("❌ " + err.message, false);
-    });
+    } catch(e) {
+      sMsg("❌ Antwort nicht lesbar: " + xhr.status, false);
+    }
+  };
+  xhr.onerror   = function() { sMsg("❌ Verbindungsfehler — CORS blockiert?", false); };
+  xhr.ontimeout = function() { sMsg("❌ Timeout", false); };
+  xhr.send();
 }
 
 // ── SOURCE TABS ───────────────────────────────────────────────────────────────
@@ -600,36 +607,84 @@ function callClaudeDirectly(imgB64, imgMime, link) {
 function analyzeViaGAS(link) {
   var btn = document.getElementById("AI_BTN");
   setAiStatus("Analysiert Link…");
-
-  fetch(GAS + "?action=analyze&api_key=" + encodeURIComponent(KEY) +
-    "&link=" + encodeURIComponent(link||"") + "&source=" + encodeURIComponent(SRC))
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-      setAiStatus("");
+  var url = GAS + "?action=analyze&api_key=" + encodeURIComponent(KEY) +
+    "&link=" + encodeURIComponent(link||"") + "&source=" + encodeURIComponent(SRC);
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", url, true);
+  xhr.timeout = 35000;
+  xhr.onload = function() {
+    btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
+    setAiStatus("");
+    try {
+      var d = JSON.parse(xhr.responseText);
       if (d && d.ok && d.result) {
-        var r   = d.result;
+        var r = d.result;
         var pct = Math.round((r.konfidenz||0)*100);
         if (pct < 50) {
           setAiRes("⚠️ Analyse nicht eindeutig (" + pct + "%) — bitte manuell ausfüllen.", false);
         } else {
           var n = applyResult(r);
-          setAiRes(pct >= 90
-            ? "✅ " + n + " Felder befüllt (" + pct + "%)"
+          setAiRes(pct >= 90 ? "✅ " + n + " Felder befüllt (" + pct + "%)"
             : "⚠️ " + n + " Felder — bitte prüfen (" + pct + "%)", pct >= 90);
           document.getElementById("formArea").scrollTo({top:0, behavior:"smooth"});
         }
       } else {
         setAiRes("❌ " + (d&&d.error ? d.error : "Analyse fehlgeschlagen"), false);
       }
-    })
-    .catch(function(e) {
-      btn.disabled = false; btn.textContent = "✨ Jetzt analysieren";
-      setAiStatus("");
-      setAiRes("❌ Verbindungsfehler: " + e.message, false);
-    });
+    } catch(e) { setAiRes("❌ Parse Fehler", false); }
+  };
+  xhr.onerror   = function() { btn.disabled=false; btn.textContent="✨ Jetzt analysieren"; setAiStatus(""); setAiRes("❌ Verbindungsfehler", false); };
+  xhr.ontimeout = function() { btn.disabled=false; btn.textContent="✨ Jetzt analysieren"; setAiStatus(""); setAiRes("❌ Timeout", false); };
+  xhr.send();
 }
 
+
+
+// ── SUBMIT ────────────────────────────────────────────────────────────────────
+function doSubmit() {
+  var name = document.getElementById("f-name").value.trim();
+  var erf  = document.getElementById("h-erf").value;
+  if (!name) { toast("❗ Produktbezeichnung fehlt", "err"); return; }
+  if (!erf)  { toast("❗ Bitte Erfasser auswählen", "err"); return; }
+  if (!GAS)  { toast("❗ GAS URL fehlt", "err"); return; }
+
+  var btn = document.getElementById("SUB_BTN");
+  btn.disabled = true; btn.textContent = "⏳ Wird gespeichert…";
+
+  var qs = "?action=save" +
+    "&erfasser="            + encodeURIComponent(erf) +
+    "&produktbezeichnung="  + encodeURIComponent(name) +
+    "&produktbeschreibung=" + encodeURIComponent(document.getElementById("f-desc").value.trim()) +
+    "&kundennutzen="        + encodeURIComponent(document.getElementById("f-nut").value.trim()) +
+    "&preisindikation="     + encodeURIComponent(document.getElementById("f-preis").value.trim()) +
+    "&geschaeftsmodell="    + encodeURIComponent(document.getElementById("f-gm").value) +
+    "&link="                + encodeURIComponent(document.getElementById("IN_LINK").value.trim()) +
+    "&quellentyp="          + encodeURIComponent(SRC) +
+    "&kategorie="           + encodeURIComponent(CAT) +
+    "&steeringBoard="       + encodeURIComponent(SB) +
+    "&zielgruppe="          + encodeURIComponent(document.getElementById("f-zg").value) +
+    "&anmerkungen="         + encodeURIComponent(document.getElementById("f-anm").value.trim());
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", GAS + qs, true);
+  xhr.timeout = 15000;
+  xhr.onload = function() {
+    btn.disabled = false; btn.textContent = "💡 Idee einreichen";
+    try {
+      var r = JSON.parse(xhr.responseText);
+      if (r.ok) {
+        document.getElementById("okId").textContent = r.ideaId;
+        document.getElementById("okScreen").classList.add("show");
+        loadStats();
+      } else {
+        toast("❌ " + (r.error||"Fehler"), "err");
+      }
+    } catch(e) { toast("❌ Parse Fehler", "err"); }
+  };
+  xhr.onerror   = function() { btn.disabled=false; btn.textContent="💡 Idee einreichen"; toast("❌ Verbindungsfehler", "err"); };
+  xhr.ontimeout = function() { btn.disabled=false; btn.textContent="💡 Idee einreichen"; toast("❌ Timeout", "err"); };
+  xhr.send();
+}
 
 // ── INIT ─────────────────────────────────────────────────────────────────────
 (function() {
@@ -655,6 +710,5 @@ function analyzeViaGAS(link) {
   }
 })();
 </script>
-
 </body>
 </html>
